@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Triangle Calculator</title>
+  <style>
+    :root{font-family:Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;}
+    body{max-width:1000px;margin:20px auto;padding:18px;background:#fafafa;border:1px solid #eee;border-radius:12px}
+    h1{margin:0 0 8px;font-size:20px}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+    label{display:block;font-size:12px;color:#333;margin-bottom:6px}
+    input[type=text], select{width:100%;padding:8px;border-radius:6px;border:1px solid #ccc;font-size:14px}
+    .controls{display:flex;gap:8px;margin-top:12px}
+    button{padding:8px 12px;border-radius:8px;border:none;background:#0b74ff;color:#fff;cursor:pointer}
+    button.secondary{background:#6c757d}
+    .results{margin-top:16px;padding:12px;border-radius:8px;background:#fff;border:1px solid #e6e6e6}
+    .row{display:flex;gap:12px}
+    pre{white-space:pre-wrap;font-family:monospace}
+    .svg-wrap{width:320px;height:240px;background:#fff;border-radius:8px;border:1px solid #e6e6e6;padding:8px}
+    .small{font-size:12px;color:#666}
+    .note{font-size:13px;margin-top:8px;color:#333}
+  </style>
+</head>
+<body>
+  <h1>Triangle Calculator (HTML + JS)</h1>
+  <div class="small">Enter any <strong>3 values</strong> (at least <strong>one side</strong>) — sides: <code>a</code>, <code>b</code>, <code>c</code>; angles: <code>A</code>, <code>B</code>, <code>C</code>. Angles accept expressions like <code>pi/2</code>, <code>3pi/4</code> when radians is selected.</div>
+
+  <div style="margin-top:12px;display:flex;gap:12px;align-items:center">
+    <label style="min-width:86px">Angle Unit</label>
+    <select id="angleUnit">
+      <option value="deg">degree °</option>
+      <option value="rad">radian (pi)</option>
+    </select>
+  </div>
+
+  <div class="grid" style="margin-top:12px">
+    <div>
+      <label>a (side opposite A)</label>
+      <input id="a" type="text" placeholder="e.g. 5" />
+    </div>
+    <div>
+      <label>b (side opposite B)</label>
+      <input id="b" type="text" placeholder="e.g. 6" />
+    </div>
+    <div>
+      <label>c (side opposite C)</label>
+      <input id="c" type="text" placeholder="e.g. 7" />
+    </div>
+
+    <div>
+      <label>A (angle opposite a)</label>
+      <input id="A" type="text" placeholder="e.g. 60" />
+    </div>
+    <div>
+      <label>B (angle opposite b)</label>
+      <input id="B" type="text" placeholder="e.g. 50" />
+    </div>
+    <div>
+      <label>C (angle opposite c)</label>
+      <input id="C" type="text" placeholder="e.g. 70" />
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="calc">Calculate</button>
+    <button id="clear" class="secondary">Clear</button>
+    <div style="margin-left:auto" class="small">Example: try <code>a=1</code>, <code>B=60</code>, <code>C=60</code></div>
+  </div>
+
+  <div class="results" id="results" style="display:none">
+    <div style="display:flex;gap:12px">
+      <div style="flex:1">
+        <h3>Results</h3>
+        <div id="summary"></div>
+        <pre id="details"></pre>
+      </div>
+      <div style="width:340px">
+        <h3>Preview</h3>
+        <div class="svg-wrap">
+          <svg id="triSVG" width="320" height="220" viewBox="0 0 320 220"></svg>
+        </div>
+        <div class="note">Not to scale. The SVG attempts a geometric placement for illustration only.</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// Utility parsers
+function parseNumber(s){
+  if(s===null || s===undefined) return null;
+  s = (''+s).trim();
+  if(s==='') return null;
+  // Try direct number parse
+  let n = Number(s);
+  if(!isNaN(n)) return n;
+  return null;
+}
+
+function parseAngleInput(str, unit){
+  if(!str) return null;
+  str = (''+str).trim();
+  if(str==='') return null;
+  try{
+    if(unit==='deg'){
+      // accept number
+      let n = Number(str);
+      if(isNaN(n)) return null; else return n * Math.PI/180;
+    } else {
+      // radians mode — allow expressions like pi/2, 3pi/4, or numbers
+      // replace PI tokens
+      let s = str.replace(/π/g,'pi');
+      // Insert '*' between number and pi if missing, e.g. 3pi -> 3*pi
+      s = s.replace(/(\d)\s*pi/gi, '$1*pi');
+      // replace 'pi' with Math.PI
+      s = s.replace(/pi/gi, '('+Math.PI+')');
+      // allow fractions without explicit slash? user will use /
+      let val = Function('return ('+s+')')();
+      return Number(val);
+    }
+  } catch(e){
+    return null;
+  }
+}
+
+function toDegrees(rad){return rad*180/Math.PI}
+function toUnitAngle(rad, unit){ if(unit==='deg') return (toDegrees(rad)); else return rad }
+
+// Triangle solvers
+function almostEqual(x,y,eps=1e-9){return Math.abs(x-y)<=eps}
+
+function solveTriangle(inputs){
+  // inputs: a,b,c in numbers or null; A,B,C in radians or null
+  // returns object {solutions: [ {a,b,c,A,B,C, area, type, medians, inradius, circumradius } ], ambiguous:bool, messages:[] }
+  let {a,b,c,A,B,C} = inputs;
+  let msgs = [];
+  // Count knowns
+  function known(x){return x!==null && x!==undefined && !Number.isNaN(x)}
+  let knownCount = [a,b,c,A,B,C].filter(known).length;
+  if(knownCount<3) return {solutions:[],messages:['Please provide at least 3 values (and at least one side).']};
+  if(!known(a) && !known(b) && !known(c)) return {solutions:[],messages:['At least one side (a, b or c) must be provided.']};
+
+  // Work on a copy and attempt deterministic solving. We'll attempt to find up to 2 solutions (SSA ambiguous)
+  // Helper: law of cosines to compute a from b,c,A: a^2 = b^2 + c^2 -2bc cos A
+  function lawCosine_side(b,c,A){
+    let v = b*b + c*c - 2*b*c*Math.cos(A);
+    if(v<0 && v>-1e-9) v=0;
+    if(v<0) return null;
+    return Math.sqrt(v);
+  }
+  function lawCosine_angle(a,b,c){ // returns angle opposite a
+    let num = b*b + c*c - a*a;
+    let den = 2*b*c;
+    if(den===0) return null;
+    let x = num/den;
+    if(x>1 && x<1+1e-9) x=1; if(x<-1 && x>-1-1e-9) x=-1;
+    if(x>1||x<-1) return null;
+    return Math.acos(x);
+  }
+
+  // We'll attempt to fill missing values using rules repeatedly
+  function attemptFill(values){
+    let changed = true; let iter=0;
+    while(changed && iter<10){
+      changed=false; iter++;
+      let {a,b,c,A,B,C} = values;
+      // If three sides known -> angles via law of cosines
+      if(known(a)&&known(b)&&known(c)){
+        if(!known(A)){ let v = lawCosine_angle(a,b,c); if(v!==null){values.A=v;changed=true}};
+        if(!known(B)){ let v = lawCosine_angle(b,a,c); if(v!==null){values.B=v;changed=true}};
+        if(!known(C)){ let v = lawCosine_angle(c,a,b); if(v!==null){values.C=v;changed=true}};
+      }
+      // SAS: two sides and included angle -> third side
+      if(known(b)&&known(c)&&known(A) && !known(a)){ let v = lawCosine_side(b,c,A); if(v!==null){values.a=v;changed=true}};
+      if(known(a)&&known(c)&&known(B) && !known(b)){ let v = lawCosine_side(a,c,B); if(v!==null){values.b=v;changed=true}};
+      if(known(a)&&known(b)&&known(C) && !known(c){ let v = lawCosine_side(a,b,C); if(v!==null){values.c=v;changed=true}};
+      // ASA/AAS: two angles and one side -> third angle & other sides by law of sines
+      if((known(A)&&known(B) && !known(C))){ values.C = Math.PI - values.A - values.B; changed=true }
+      if((known(A)&&known(C) && !known(B))){ values.B = Math.PI - values.A - values.C; changed=true }
+      if((known(B)&&known(C) && !known(A))){ values.A = Math.PI - values.B - values.C; changed=true }
+      // If angle and opposite side and one other angle/side -> use law of sines
+      if(known(a)&&known(A)){
+        if(known(B)&&!known(b)){
+          let s = Math.sin(values.B)/Math.sin(values.A); values.b = values.a * s; changed=true;
+        }
+        if(known(C)&&!known(c)){
+          let s = Math.sin(values.C)/Math.sin(values.A); values.c = values.a * s; changed=true;
+        }
+        if(known(b)&&!known(B)){
+          let ratio = values.b/values.a * Math.sin(values.A);
+          if(Math.abs(ratio)>1+1e-9){} else { values.B = Math.asin(Math.max(-1,Math.min(1,ratio))); changed=true }
+        }
+        if(known(c)&&!known(C)){
+          let ratio = values.c/values.a * Math.sin(values.A);
+          if(Math.abs(ratio)>1+1e-9){} else { values.C = Math.asin(Math.max(-1,Math.min(1,ratio))); changed=true }
+        }
+      }
+      if(known(b)&&known(B)){
+        if(known(A)&&!known(a)){ let s = Math.sin(values.A)/Math.sin(values.B); values.a = values.b * s; changed=true }
+        if(known(C)&&!known(c)){ let s = Math.sin(values.C)/Math.sin(values.B); values.c = values.b * s; changed=true }
+        if(known(a)&&!known(A)){ let ratio = values.a/values.b * Math.sin(values.B); if(Math.abs(ratio)<=1+1e-9){values.A = Math.asin(Math.max(-1,Math.min(1,ratio))); changed=true} }
+        if(known(c)&&!known(C)){ let ratio = values.c/values.b * Math.sin(values.B); if(Math.abs(ratio)<=1+1e-9){values.C = Math.asin(Math.max(-1,Math.min(1,ratio))); changed=true} }
+      }
+      if(known(c)&&known(C)){
+        if(known(A)&&!known(a)){ let s = Math.sin(values.A)/Math.sin(values.C); values.a = values.c * s; changed=true }
+        if(known(B)&&!known(b)){ let s = Math.sin(values.B)/Math.sin(values.C); values.b = values.c * s; changed=true }
+        if(known(a)&&!known(A)){ let ratio = values.a/values.c * Math.sin(values.C); if(Math.abs(ratio)<=1+1e-9){values.A = Math.asin(Math.max(-1,Math.min(1,ratio))); changed=true} }
+        if(known(b)&&!known(B)){ let ratio = values.b/values.c * Math.sin(values.C); if(Math.abs(ratio)<=1+1e-9){values.B = Math.asin(Math.max(-1,Math.min(1,ratio))); changed=true} }
+      }
+      // If after computing two angles, the third can be filled
+      if((known(values.A)&&known(values.B) && !known(values.C))){ values.C = Math.PI - values.A - values.B; changed=true }
+      if((known(values.A)&&known(values.C) && !known(values.B))){ values.B = Math.PI - values.A - values.C; changed=true }
+      if((known(values.B)&&known(values.C) && !known(values.A))){ values.A = Math.PI - values.B - values.C; changed=true }
+    }
+    return values;
+  }
+
+  let base = {a:a,b:b,c:c,A:A,B:B,C:C};
+
+  // Case detection for ambiguous SSA: if we have side and opposite not known angle, handle separately
+  // We'll try to detect SSA: given a and A and b (or permutations) but missing corresponding angle
+  function findSSAvariants(){
+    // Return possible solution arrays
+    let sols = [];
+    // Try permutations: if a and A known and b known but B unknown -> can be 0,1,2 solutions
+    if(known(base.a) && known(base.A) && known(base.b) && !known(base.B)){
+      let ratio = base.b * Math.sin(base.A) / base.a; // sin B = b * sin A / a
+      if(ratio>1+1e-9) { return sols; }
+      if(ratio>1) ratio=1; if(ratio<-1) ratio=-1;
+      let B1 = Math.asin(ratio);
+      let B2 = Math.PI - B1;
+      [B1,B2].forEach(Bcand=>{
+        let vals = {a:base.a,b:base.b,c:base.c,A:base.A,B:Bcand,C:base.C};
+        vals = attemptFill(Object.assign({},vals));
+        // validate angles sum
+        if(known(vals.A)&&known(vals.B)&&known(vals.C)){
+          if(vals.A+vals.B+vals.C>Math.PI+1e-6 || vals.A+vals.B+vals.C<Math.PI-1e-6) return; // invalid
+        }
+        sols.push(vals);
+      });
+      return sols;
+    }
+    // similar for other permutations
+    if(known(base.b) && known(base.B) && known(base.c) && !known(base.C)){
+      let ratio = base.c * Math.sin(base.B) / base.b;
+      if(!(ratio>1+1e-9)){
+        if(ratio>1) ratio=1; if(ratio<-1) ratio=-1;
+        let C1=Math.asin(ratio), C2=Math.PI-C1;
+        [C1,C2].forEach(Ccand=>{ let vals={a:base.a,b:base.b,c:base.c,A:base.A,B:base.B,C:Ccand}; vals=attemptFill(vals); sols.push(vals)});
+      }
+      return sols;
+    }
+    if(known(base.a) && known(base.A) && known(base.c) && !known(base.C)){
+      let ratio = base.c * Math.sin(base.A) / base.a;
+      if(!(ratio>1+1e-9)){
+        if(ratio>1) ratio=1; if(ratio<-1) ratio=-1;
+        let C1=Math.asin(ratio), C2=Math.PI-C1;
+        [C1,C2].forEach(Ccand=>{ let vals={a:base.a,b:base.b,c:base.c,A:base.A,B:base.B,C:Ccand}; vals=attemptFill(vals); sols.push(vals)});
+      }
+      return sols;
+    }
+    return sols;
+  }
+
+  // If SSA ambiguous present, produce both
+  let ssaSols = findSSAvariants();
+  if(ssaSols.length>0){
+    // Filter duplicates & invalid
+    let final = [];
+    for(let sol of ssaSols){
+      // try final fill more
+      sol = attemptFill(sol);
+      if(known(sol.a)&&known(sol.b)&&known(sol.c)&&known(sol.A)&&known(sol.B)&&known(sol.C)){
+        final.push(sol);
+      }
+    }
+    final = final.filter((v,i,arr)=> i===arr.findIndex(u=>Math.abs(u.a-v.a)<1e-6 && Math.abs(u.b-v.b)<1e-6 && Math.abs(u.c-v.c)<1e-6));
+    if(final.length>0){
+      // compute details
+      final = final.map(makeComputed);
+      return {solutions:final,ambiguous:final.length>1,messages:msgs};
+    }
+  }
+
+  // Else do deterministic solve
+  let filled = attemptFill(Object.assign({},base));
+  if(!(known(filled.a)&&known(filled.b)&&known(filled.c)&&known(filled.A)&&known(filled.B)&&known(filled.C))){
+    msgs.push('Could not determine all values from the provided inputs. Please check for contradictory or insufficient data (SSA ambiguous is handled).');
+  }
+
+  let sol = makeComputed(filled);
+  return {solutions:[sol],ambiguous:false,messages:msgs};
+
+  // helpers to compute area and other properties
+  function makeComputed(vals){
+    // ensure angles in range and assign
+    let a=vals.a,b=vals.b,c=vals.c,A=vals.A,B=vals.B,C=vals.C;
+    // area: if two sides and included angle known -> 0.5 ab sin C etc. else Heron
+    let area = null;
+    if(known(a)&&known(b)&&known(C)) area = 0.5*a*b*Math.sin(C);
+    if(known(a)&&known(c)&&known(B)) area = 0.5*a*c*Math.sin(B);
+    if(known(b)&&known(c)&&known(A)) area = 0.5*b*c*Math.sin(A);
+    if(!known(area) && known(a)&&known(b)&&known(c)){
+      let s = (a+b+c)/2; area = Math.sqrt(Math.max(0,s*(s-a)*(s-b)*(s-c)));
+    }
+    let s = known(a)&&known(b)&&known(c) ? (a+b+c)/2 : null;
+    let inradius = (area && s) ? area/s : null;
+    let R = (known(a)&&known(A)) ? a/(2*Math.sin(A)) : (known(b)&&known(B)) ? b/(2*Math.sin(B)) : (known(c)&&known(C)) ? c/(2*Math.sin(C)) : null;
+    // medians
+    function median_a(a,b,c){ return 0.5*Math.sqrt(2*b*b + 2*c*c - a*a); }
+    let ma = (known(a)&&known(b)&&known(c))? median_a(a,b,c) : null;
+    let mb = (known(a)&&known(b)&&known(c))? median_a(b,a,c) : null;
+    let mc = (known(a)&&known(b)&&known(c))? median_a(c,a,b) : null;
+    // triangle type by sides
+    let sideType = null; if(known(a)&&known(b)&&known(c)){
+      if(almostEqual(a,b) && almostEqual(b,c)) sideType='Equilateral';
+      else if(almostEqual(a,b) || almostEqual(b,c) || almostEqual(a,c)) sideType='Isosceles';
+      else sideType='Scalene';
+    }
+    // angle type
+    let angleType = null; if(known(A)&&known(B)&&known(C)){
+      let m = Math.max(A,B,C);
+      if(almostEqual(m,Math.PI/2)) angleType='Right';
+      else if(m>Math.PI/2) angleType='Obtuse'; else angleType='Acute';
+    }
+    return {a,b,c,A,B,C,area,s,inradius,circumradius:R,ma,mb,mc,sideType,angleType};
+  }
+}
+
+// UI wiring
+const elm = id=>document.getElementById(id);
+
+function readInputs(){
+  let unit = elm('angleUnit').value; // 'deg' or 'rad'
+  let a = parseNumber(elm('a').value);
+  let b = parseNumber(elm('b').value);
+  let c = parseNumber(elm('c').value);
+  let A = parseAngleInput(elm('A').value, unit);
+  let B = parseAngleInput(elm('B').value, unit);
+  let C = parseAngleInput(elm('C').value, unit);
+  return {a:a,b:b,c:c,A:A,B:B,C:C,unit:unit};
+}
+
+function prettyAngle(rad,unit){ if(rad===null||rad===undefined) return '—'; if(unit==='deg') return (Math.round(toDegrees(rad)*1e6)/1e6)+'°'; else return (Math.round(rad*1e9)/1e9)+' rad'; }
+function prettyNum(x){ if(x===null||x===undefined) return '—'; return Math.round(x*1e6)/1e6 }
+
+function drawTriangle(sol){
+  const svg = elm('triSVG'); while(svg.firstChild) svg.removeChild(svg.firstChild);
+  if(!sol || !sol.a||!sol.b||!sol.c) return;
+  // Place side c horizontally from (20,180) to (20+c_scaled,180)
+  // Use law of cosines to compute angle at A to place vertex
+  let scale = Math.min(240/Math.max(sol.a,sol.b,sol.c), 1.5);
+  let x0=20, y0=180;
+  let x1 = x0 + sol.c*scale; let y1=y0;
+  // compute coordinates of vertex opposite side c (i.e., vertex A where sides b and a meet). We place side c between B and C; here we align so that side c is between points for which opposite angle is C? Simplify: place points for sides a opposite A...
+  // We'll place points so that side c is between points (x0,y0)-(x1,y1), and third point at appropriate position using lengths b and a.
+  // Let point P2 be third vertex. Distance to (x0,y0) should be b, to (x1,y1) should be a.
+  let r0 = sol.b*scale; let r1 = sol.a*scale;
+  // compute intersection of two circles
+  let dx = x1-x0; let dy=y1-y0; let d = Math.hypot(dx,dy);
+  if(d===0) return;
+  let ex = dx/d, ey = dy/d;
+  let x = (r0*r0 - r1*r1 + d*d)/(2*d);
+  let h = Math.sqrt(Math.max(0,r0*r0 - x*x));
+  let xm = x0 + ex*x; let ym = y0 + ey*x;
+  let rx = -ey * h; let ry = ex * h;
+  // choose the point with positive y smaller than y0 (so triangle upwards)
+  let px1 = xm + rx, py1 = ym + ry;
+  let px2 = xm - rx, py2 = ym - ry;
+  let px = (py1<py2)?px1:px2; let py=(py1<py2)?py1:py2;
+
+  function addLine(x1,y1,x2,y2,cls){
+    let l = document.createElementNS('http://www.w3.org/2000/svg','line');
+    l.setAttribute('x1',x1); l.setAttribute('y1',y1); l.setAttribute('x2',x2); l.setAttribute('y2',y2);
+    l.setAttribute('stroke','#0b74ff'); l.setAttribute('stroke-width',2);
+    svg.appendChild(l);
+  }
+  function addCircle(x,y,r){ let c=document.createElementNS('http://www.w3.org/2000/svg','circle'); c.setAttribute('cx',x); c.setAttribute('cy',y); c.setAttribute('r',r); c.setAttribute('fill','#fff'); c.setAttribute('stroke','#0b74ff'); c.setAttribute('stroke-width',1); svg.appendChild(c);}  
+  // draw triangle
+  addLine(x0,y0,x1,y1); addLine(x1,y1,px,py); addLine(px,py,x0,y0);
+  // labels
+  function addText(x,y,t){ let el=document.createElementNS('http://www.w3.org/2000/svg','text'); el.setAttribute('x',x); el.setAttribute('y',y); el.setAttribute('font-size','12'); el.setAttribute('fill','#222'); el.textContent=t; svg.appendChild(el);}  
+  addText(x0-6,y0+14,'B'); addText(x1+4,y1+14,'C'); addText(px,y0-8,'A');
+  addText((x0+x1)/2,y0+24,'c='+prettyNum(sol.c)); addText((x1+px)/2,(y1+py)/2-6,'a='+prettyNum(sol.a)); addText((px+x0)/2,(py+y0)/2-6,'b='+prettyNum(sol.b));
+}
+
+elm('calc').addEventListener('click',()=>{
+  let inputs = readInputs();
+  let a = inputs.a, b=inputs.b, c=inputs.c, A=inputs.A, B=inputs.B, C=inputs.C; let unit=inputs.unit;
+  let parsed = {a:a,b:b,c:c,A:A,B:B,C:C};
+  let ok = (a||b||c) ? true : false;
+  if(!ok){ alert('Please provide at least one side (a, b, or c)'); return }
+  let res = solveTriangle(parsed);
+  if(res.messages && res.messages.length) console.log(res.messages.join('\n'));
+  if(res.solutions.length===0){ elm('results').style.display='block'; elm('summary').innerHTML='<b>No solution</b>'; elm('details').textContent = (res.messages||[]).join('\n'); return; }
+  let out = '';
+  if(res.ambiguous) out += '<b>Ambiguous (two possible solutions found)</b>\n';
+  let sol = res.solutions[0];
+  elm('results').style.display='block';
+  let summaryHTML = `<div><strong>Side types:</strong> ${sol.sideType||'—'} | <strong>Angle type:</strong> ${sol.angleType||'—'}</div>`;
+  elm('summary').innerHTML = summaryHTML;
+  let details = [];
+  details.push('a = '+prettyNum(sol.a)+', b = '+prettyNum(sol.b)+', c = '+prettyNum(sol.c));
+  details.push('A = '+prettyAngle(sol.A,unit)+', B = '+prettyAngle(sol.B,unit)+', C = '+prettyAngle(sol.C,unit));
+  details.push('Perimeter = '+ (sol.a && sol.b && sol.c ? prettyNum(sol.a+sol.b+sol.c) : '—'));
+  details.push('Area = '+prettyNum(sol.area));
+  details.push('Semiperimeter (s) = '+prettyNum(sol.s));
+  details.push('Inradius = '+prettyNum(sol.inradius));
+  details.push('Circumradius = '+prettyNum(sol.circumradius));
+  details.push('Medians: ma='+prettyNum(sol.ma)+', mb='+prettyNum(sol.mb)+', mc='+prettyNum(sol.mc));
+  elm('details').textContent = details.join('\n');
+  drawTriangle(sol);
+});
+
+elm('clear').addEventListener('click',()=>{['a','b','c','A','B','C'].forEach(id=>elm(id).value=''); elm('results').style.display='none';});
+</script>
+</body>
+</html>
